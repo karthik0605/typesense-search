@@ -16,6 +16,6 @@ Start server:
 TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
 TYPESENSE_API_KEY=<TYPESENSE> npm start --silent
 
-UIs:
+UIs (use your admin Typesense key when prompted):
 http://localhost:3000/public/instant
 http://localhost:3000/public/conv
