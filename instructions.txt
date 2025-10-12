@@ -19,3 +19,6 @@ TYPESENSE_API_KEY=<TYPESENSE> npm start --silent
 UIs (use your admin Typesense key when prompted):
 http://localhost:3000/public/instant
 http://localhost:3000/public/conv
+
+Currently can put API key directly through browser (for fast testing), 
+but sends to server during setup, which would be optimal for production
