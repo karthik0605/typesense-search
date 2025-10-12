@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Typesense InstantSearch (Direct)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/instantsearch.css@8/themes/algolia.css" />
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    input { font-size: 16px; padding: 0.5rem; }
+    #results { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>InstantSearch (Typesense)</h1>
+  <div class="row">
+    <input id="host" placeholder="host" size="20" />
+    <input id="port" placeholder="8108" size="6" />
+    <input id="protocol" placeholder="http" size="6" />
+    <input id="apiKey" placeholder="Search-only API Key" size="30" />
+  </div>
+
+  <div id="searchbox" style="margin-top: 1rem"></div>
+  <div id="hits"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/instantsearch.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/typesense-instantsearch-adapter@2/dist/typesense-instantsearch-adapter.min.js"></script>
+  <script>
+    const hostEl = document.getElementById('host');
+    const portEl = document.getElementById('port');
+    const protocolEl = document.getElementById('protocol');
+    const apiKeyEl = document.getElementById('apiKey');
+
+    // Resolve config from URL params -> /config.json -> localStorage -> defaults
+    const params = new URLSearchParams(location.search);
+    const saved = JSON.parse(localStorage.getItem('ts_cfg') || '{}');
+
+    function applyValues(cfg){
+      if (!cfg) return;
+      if (cfg.host) hostEl.value = cfg.host;
+      if (cfg.port) portEl.value = String(cfg.port);
+      if (cfg.protocol) protocolEl.value = cfg.protocol;
+      if (cfg.searchKey) apiKeyEl.value = cfg.searchKey;
+    }
+
+    applyValues({
+      host: params.get('host') || saved.host || '127.0.0.1',
+      port: params.get('port') || saved.port || '8108',
+      protocol: params.get('protocol') || saved.protocol || 'http',
+      searchKey: params.get('apiKey') || saved.searchKey || ''
+    });
+
+    fetch('/config.json').then(r => r.ok ? r.json() : null).then(cfg => {
+      if (cfg) applyValues(cfg);
+      init();
+    }).catch(() => { init(); });
+
+    let search = undefined;
+
+    function init() {
+      const rawHost = hostEl.value.trim();
+      const host = (rawHost && rawHost.toLowerCase() !== 'host') ? rawHost : '';
+      const port = portEl.value.trim();
+      const protocol = protocolEl.value.trim() || 'http';
+      const apiKey = apiKeyEl.value.trim();
+      localStorage.setItem('ts_cfg', JSON.stringify({ host, port, protocol, searchKey: apiKey }));
+      if (!apiKey) return;
+
+      let searchClient;
+      if (!host || !port) {
+        // Same-origin proxy client: no direct VM connection required
+        searchClient = {
+          async search(requests) {
+            const q = (requests?.[0]?.params?.query || '').toString();
+            const body = {
+              searches: requests.map(r => ({
+                collection: 'seating',
+                query_by: (r.params && r.params.query_by) || 'code,description',
+                sort_by: (r.params && r.params.sort_by) || 'price:asc',
+                q
+              }))
+            };
+            const res = await fetch(`/multi_search?q=${encodeURIComponent(q).replace(/%20/g,'+')}&conversation=false&conversation_stream=false&prefix=false`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey },
+              body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            const results = (data.results || []).map(r => ({
+              hits: (r.hits || []).map(h => ({ ...h.document, _id: h.document.id, _snippetResult: {} })),
+              nbHits: r.found || 0,
+              processingTimeMS: r.search_time_ms || 0,
+              params: '',
+              query: q
+            }));
+            return { results };
+          }
+        };
+      } else {
+        const typesenseInstantsearchAdapter = new TypesenseInstantSearchAdapter({
+          server: { apiKey, nodes: [{ host, port: Number(port), protocol }] },
+          additionalSearchParameters: {
+            query_by: 'code,description',
+            sort_by: 'price:asc'
+          }
+        });
+        searchClient = typesenseInstantsearchAdapter.searchClient;
+      }
+
+      if (search) { search.dispose(); }
+      search = instantsearch({ indexName: 'seating', searchClient });
+
+      search.addWidgets([
+        instantsearch.widgets.searchBox({ container: '#searchbox' }),
+        instantsearch.widgets.hits({
+          container: '#hits',
+          templates: {
+            item(hit) {
+              const desc = (hit.description || '').slice(0, 140);
+              const price = (typeof hit.price === 'number') ? `$${hit.price.toFixed(2)}` : '';
+              return `<div style="padding:0.5rem;border:1px solid #ddd;border-radius:8px;margin-bottom:0.5rem">
+                <div><strong>${hit.code || ''}</strong> <span style="color:#666">${price}</span></div>
+                <div style="color:#666">${desc}</div>
+              </div>`;
+            }
+          }
+        })
+      ]);
+
+      search.start();
+    }
+
+    apiKeyEl.addEventListener('change', init);
+    hostEl.addEventListener('change', init);
+    portEl.addEventListener('change', init);
+    protocolEl.addEventListener('change', init);
+    // Also initialize on first load
+    init();
+  </script>
+</body>
+</html>
+
+
+

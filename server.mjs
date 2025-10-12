@@ -1,0 +1,247 @@
+import express from 'express';
+import Typesense from 'typesense';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const app = express();
+const port = Number(process.env.PORT) || 3000;
+const tsTimeout = Number(process.env.TYPESENSE_TIMEOUT_SECONDS || 10);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const client = new Typesense.Client({
+  nodes: [
+    { host: process.env.TYPESENSE_HOST || 'localhost', port: Number(process.env.TYPESENSE_PORT) || 8108, protocol: process.env.TYPESENSE_PROTOCOL || 'http' }
+  ],
+  apiKey: process.env.TYPESENSE_API_KEY || 'xyz',
+  connectionTimeoutSeconds: tsTimeout
+});
+
+app.get('/health', async (_req, res) => {
+  try {
+    const health = await client.health.retrieve();
+    res.json(health);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error?.message || String(error) });
+  }
+});
+
+// Public config for browser-based frontends (no secrets!).
+app.get('/config.json', (req, res) => {
+  const host = process.env.TYPESENSE_HOST || req.hostname || 'localhost';
+  const port = Number(process.env.TYPESENSE_PORT) || 8108;
+  const protocol = process.env.TYPESENSE_PROTOCOL || 'http';
+  const searchKey = process.env.TYPESENSE_SEARCH_KEY || '';
+  res.json({ host, port, protocol, searchKey });
+});
+
+// Serve the two demo frontends for convenience
+app.get('/public/conv', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public_conv_fetch.html'));
+});
+app.get('/public/instant', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public_instantsearch.html'));
+});
+
+// Remove legacy demo routes; keep only config, static demo pages, and proxy endpoints
+
+// Same-origin proxy for multi_search to avoid browser CORS issues
+app.post('/proxy/multi_search', express.json(), async (req, res) => {
+  const host = (req.query.host || process.env.TYPESENSE_HOST || 'localhost').toString();
+  const port = Number(req.query.port || process.env.TYPESENSE_PORT || 8108);
+  const protocol = (req.query.protocol || process.env.TYPESENSE_PROTOCOL || 'http').toString();
+  const apiKey = req.header('X-TYPESENSE-API-KEY') || process.env.TYPESENSE_API_KEY || 'xyz';
+
+  const q = (req.query.q || '').toString();
+  const conversation = (req.query.conversation || 'true').toString();
+  const conversation_stream = (req.query.conversation_stream || 'false').toString();
+  const conversation_model_id = (req.query.conversation_model_id || process.env.CONV_MODEL_ID || 'conv-model-1').toString();
+  const prefix = (req.query.prefix || 'false').toString();
+
+  const baseUrl = `${protocol}://${host}:${port}`;
+  const encodePlus = (s) => encodeURIComponent(s).replace(/%20/g, '+');
+  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=${encodePlus(conversation)}&conversation_stream=${encodePlus(conversation_stream)}&conversation_model_id=${encodePlus(conversation_model_id)}&prefix=${encodePlus(prefix)}`;
+
+  try {
+    const tsRes = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TYPESENSE-API-KEY': apiKey
+      },
+      body: JSON.stringify(req.body)
+    });
+    const text = await tsRes.text();
+    res.status(tsRes.status).type(tsRes.headers.get('content-type') || 'application/json').send(text);
+  } catch (error) {
+    res.status(502).json({ error: error?.message || String(error) });
+  }
+});
+
+// Same-origin helper: POST /multi_search → forwards to upstream Typesense from env
+app.post('/multi_search', express.json(), async (req, res) => {
+  const upstreamHost = (process.env.TYPESENSE_UPSTREAM_HOST || process.env.TYPESENSE_HOST || '127.0.0.1').toString();
+  const upstreamPort = Number(process.env.TYPESENSE_UPSTREAM_PORT || process.env.TYPESENSE_PORT || 8108);
+  const upstreamProtocol = (process.env.TYPESENSE_UPSTREAM_PROTOCOL || process.env.TYPESENSE_PROTOCOL || 'http').toString();
+  const apiKey = req.header('X-TYPESENSE-API-KEY') || process.env.TYPESENSE_API_KEY || 'xyz';
+
+  const q = (req.query.q || '').toString();
+  const conversation = (req.query.conversation || 'true').toString();
+  const conversation_stream = (req.query.conversation_stream || 'false').toString();
+  const conversation_model_id = (req.query.conversation_model_id || process.env.CONV_MODEL_ID || 'conv-model-1').toString();
+  const prefix = (req.query.prefix || 'false').toString();
+
+  const encodePlus = (s) => encodeURIComponent(s).replace(/%20/g, '+');
+  const baseUrl = `${upstreamProtocol}://${upstreamHost}:${upstreamPort}`;
+  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=${encodePlus(conversation)}&conversation_stream=${encodePlus(conversation_stream)}&conversation_model_id=${encodePlus(conversation_model_id)}&prefix=${encodePlus(prefix)}`;
+
+  try {
+    const tsRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey },
+      body: JSON.stringify(req.body)
+    });
+    const text = await tsRes.text();
+    res.status(tsRes.status).type(tsRes.headers.get('content-type') || 'application/json').send(text);
+  } catch (error) {
+    res.status(502).json({ error: error?.message || String(error) });
+  }
+});
+app.get('/', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Typesense Books Search</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    input, select, button { font-size: 16px; padding: 0.5rem; }
+    #results { margin-top: 1rem; display: grid; gap: 0.5rem; }
+    .hit { padding: 0.5rem; border: 1px solid #ddd; border-radius: 8px; }
+    .muted { color: #666; font-size: 0.9em; }
+  </style>
+  </head>
+  <body>
+    <h1>Typesense Books Search</h1>
+    <div class="row">
+      <input id="q" placeholder="Search (e.g. harry potter)" size="30" />
+      <select id="query_by">
+        <option value="title,authors" selected>title,authors</option>
+        <option value="title">title</option>
+        <option value="authors">authors</option>
+      </select>
+      <select id="sort_by">
+        <option value="ratings_count:desc" selected>ratings_count:desc</option>
+        <option value="ratings_count:asc">ratings_count:asc</option>
+      </select>
+      <button id="go">Search</button>
+    </div>
+    <div id="meta" class="muted"></div>
+    <div id="results"></div>
+    <hr />
+    <h2>Conversational Chat (Streaming)</h2>
+    <div class="row">
+      <input id="chat_q" placeholder="Ask a question" size="40" />
+      <button id="chat_go">Ask</button>
+      <button id="chat_reset">Reset conversation</button>
+    </div>
+    <div id="chat_stream" class="muted" style="white-space: pre-wrap; margin-top: 0.5rem"></div>
+    <div id="chat_id" class="muted" style="margin-top: 0.25rem"></div>
+    <script>
+      const qInput = document.getElementById('q');
+      const queryBySel = document.getElementById('query_by');
+      const sortBySel = document.getElementById('sort_by');
+      const goBtn = document.getElementById('go');
+      const resultsEl = document.getElementById('results');
+      const metaEl = document.getElementById('meta');
+
+      async function runSearch() {
+        const q = qInput.value.trim();
+        if (!q) { resultsEl.innerHTML = ''; metaEl.textContent = ''; return; }
+        const params = new URLSearchParams({
+          q,
+          query_by: queryBySel.value,
+          sort_by: sortBySel.value,
+          per_page: '10'
+        });
+        const r = await fetch('/api/search?' + params.toString());
+        const data = await r.json();
+        const hits = (data.hits || []).map(h => h.document);
+        resultsEl.innerHTML = hits.map(doc => \`
+          <div class="hit">
+            <div><strong>\${doc.title}</strong></div>
+            <div class="muted">Authors: \${(doc.authors || []).join(', ')}</div>
+            <div class="muted">Year: \${doc.publication_year} · Ratings: \${doc.ratings_count}</div>
+          </div>
+        \`).join('');
+        metaEl.textContent = \`Found \${data.found || 0} in \${data.search_time_ms || 0}ms\`;
+      }
+
+      goBtn.addEventListener('click', runSearch);
+      qInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
+      qInput.value = 'harry potter';
+      runSearch();
+
+      // Streaming chat
+      const chatQ = document.getElementById('chat_q');
+      const chatGo = document.getElementById('chat_go');
+      const chatReset = document.getElementById('chat_reset');
+      const chatStream = document.getElementById('chat_stream');
+      const chatId = document.getElementById('chat_id');
+      let conversationId = undefined;
+      let es = undefined;
+
+      function closeStream() { if (es) { es.close(); es = undefined; } }
+
+      async function startChat() {
+        const q = chatQ.value.trim();
+        if (!q) return;
+        closeStream();
+        chatStream.textContent = '';
+        const params = new URLSearchParams({ q });
+        if (conversationId) params.set('conversation_id', conversationId);
+        es = new EventSource('/api/conv/stream?' + params.toString());
+        es.onmessage = (ev) => {
+          if (ev.data === '[DONE]') { closeStream(); return; }
+          let appended = false;
+          let parsedOk = false;
+          try {
+            const parsed = JSON.parse(ev.data);
+            parsedOk = true;
+            if (parsed?.message) { chatStream.textContent += parsed.message; appended = true; }
+            if (parsed?.conversation?.message) { chatStream.textContent += parsed.conversation.message; appended = true; }
+            if (parsed?.conversation?.answer) {
+              chatStream.textContent += (chatStream.textContent ? '\\n' : '') + parsed.conversation.answer;
+              appended = true;
+            }
+            const cid = parsed?.conversation_id || parsed?.conversation?.conversation_id;
+            if (cid) { conversationId = cid; chatId.textContent = 'conversation_id: ' + conversationId; }
+            if (parsed?.error) {
+              chatStream.textContent += '\\n[error] ' + String(parsed.error) + (parsed?.details ? ' - ' + String(parsed.details) : '') + '\\n';
+              appended = true;
+            }
+          } catch (_) { /* not JSON */ }
+          // Only append raw when it's not valid JSON at all.
+          if (!parsedOk && ev.data) {
+            chatStream.textContent += ev.data;
+          }
+        };
+        es.onerror = (e) => { chatStream.textContent += '\\n[stream error]\\n'; closeStream(); };
+      }
+
+      chatGo.addEventListener('click', startChat);
+      chatQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') startChat(); });
+      chatReset.addEventListener('click', () => { conversationId = undefined; chatId.textContent = ''; chatStream.textContent = ''; });
+    </script>
+  </body>
+  </html>`);
+});
+
+app.listen(port, () => {
+  console.log(`Search UI running on http://localhost:${port}`);
+});
+
+

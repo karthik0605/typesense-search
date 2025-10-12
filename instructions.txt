@@ -1,0 +1,21 @@
+VM tunnel (Mac):
+ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -N -L 8108:127.0.0.1:8108 typesense@54.219.100.201
+password: <VM password>
+
+Seating embeddings (once):
+OPENAI_API_KEY=<OPENAI> TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
+TYPESENSE_API_KEY=<TYPESENSE> npm run seating:setup:embedding --silent
+
+Conversation model (once):
+TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
+TYPESENSE_API_KEY=<TYPESENSE> node typesense_setup_conversation.mjs
+OPENAI_API_KEY=<OPENAI> TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
+TYPESENSE_API_KEY=<TYPESENSE> node typesense_setup_conv_model.mjs
+
+Start server:
+TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
+TYPESENSE_API_KEY=<TYPESENSE> npm start --silent
+
+UIs:
+http://localhost:3000/public/instant
+http://localhost:3000/public/conv

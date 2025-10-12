@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Typesense Conversational (Direct Fetch)</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    input, button { font-size: 16px; padding: 0.5rem; }
+    #out { white-space: pre-wrap; margin-top: 0.5rem; }
+    .muted { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>Conversational Search (Direct Fetch)</h1>
+  <div class="row">
+    <input id="host" placeholder="host" size="20" />
+    <input id="port" placeholder="8108" size="6" />
+    <input id="protocol" placeholder="http" size="6" />
+    <input id="apiKey" placeholder="Search-only API Key" size="30" />
+  </div>
+  <div class="row" style="margin-top: 0.5rem">
+    <input id="q" placeholder="Ask a question" size="40" />
+    <button id="go">Ask</button>
+    <button id="reset">Reset conversation</button>
+  </div>
+  <div id="cid" class="muted" style="margin-top: 0.5rem"></div>
+  <div id="out" class="muted"></div>
+
+  <script>
+    const hostEl = document.getElementById('host');
+    const portEl = document.getElementById('port');
+    const protocolEl = document.getElementById('protocol');
+    const apiKeyEl = document.getElementById('apiKey');
+    const qEl = document.getElementById('q');
+    const goBtn = document.getElementById('go');
+    const resetBtn = document.getElementById('reset');
+    const outEl = document.getElementById('out');
+    const cidEl = document.getElementById('cid');
+
+    // Resolve config from URL params -> /config.json -> localStorage -> defaults
+    const params = new URLSearchParams(location.search);
+    const saved = JSON.parse(localStorage.getItem('ts_cfg') || '{}');
+
+    function applyValues(cfg){
+      if (!cfg) return;
+      if (cfg.host) hostEl.value = cfg.host;
+      if (cfg.port) portEl.value = String(cfg.port);
+      if (cfg.protocol) protocolEl.value = cfg.protocol;
+      if (cfg.searchKey) apiKeyEl.value = cfg.searchKey;
+    }
+
+    applyValues({
+      host: params.get('host') || saved.host || '54.219.100.201',
+      port: params.get('port') || saved.port || '8108',
+      protocol: params.get('protocol') || saved.protocol || 'http',
+      searchKey: params.get('apiKey') || saved.searchKey || ''
+    });
+    qEl.value = params.get('q') || 'suggest a fantasy book';
+
+    fetch('/config.json').then(r => r.ok ? r.json() : null).then(cfg => {
+      if (cfg) applyValues(cfg);
+    }).catch(() => {});
+
+    let conversationId = undefined;
+
+    async function ask() {
+      const host = hostEl.value.trim();
+      const port = portEl.value.trim();
+      const protocol = protocolEl.value.trim() || 'http';
+      const apiKey = apiKeyEl.value.trim();
+      localStorage.setItem('ts_cfg', JSON.stringify({ host, port, protocol, searchKey: apiKey }));
+      const q = qEl.value.trim();
+      if (!host || !port || !q || !apiKey) return;
+
+      outEl.textContent = '';
+
+      const baseUrl = `${protocol}://${host}:${port}`;
+      const qParam = encodeURIComponent(q).replace(/%20/g, '+');
+      const url = `${baseUrl}/multi_search?q=${qParam}&conversation=true&conversation_stream=false&conversation_model_id=conv-model-1&prefix=false`;
+      const body = JSON.stringify({
+        searches: [
+          { collection: 'seating', query_by: 'embedding', exclude_fields: 'embedding' }
+        ]
+      });
+
+      try {
+        const controller = new AbortController();
+        const to = setTimeout(() => controller.abort(), 12000);
+        let res;
+        try {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-TYPESENSE-API-KEY': apiKey
+            },
+            body,
+            signal: controller.signal
+          });
+        } catch (e) {
+          // Network/CORS/timeout -> proxy fallback
+          // Always target local Typesense on the VM to avoid hairpinning to public IP
+          const proxyUrl = `/proxy/multi_search?q=${qParam}&conversation=true&conversation_stream=false&conversation_model_id=conv-model-1&prefix=false&host=127.0.0.1&port=8108&protocol=http`;
+          res = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey },
+            body
+          });
+        } finally {
+          clearTimeout(to);
+        }
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          outEl.textContent = `[error] HTTP ${res.status}: ${text}`;
+          return;
+        }
+        const data = await res.json();
+        const conv = data?.conversation;
+        if (conv?.conversation_id) {
+          conversationId = conv.conversation_id;
+          cidEl.textContent = 'conversation_id: ' + conversationId;
+        }
+        if (conv?.answer) {
+          outEl.textContent = conv.answer;
+        } else if (conv?.message) {
+          outEl.textContent = conv.message;
+        } else {
+          outEl.textContent = JSON.stringify(data, null, 2);
+        }
+      } catch (err) {
+        outEl.textContent = '[error] ' + (err?.message || String(err));
+      }
+    }
+
+    goBtn.addEventListener('click', ask);
+    qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
+    resetBtn.addEventListener('click', () => { conversationId = undefined; cidEl.textContent = ''; outEl.textContent = ''; });
+  </script>
+</body>
+</html>
+
+
+

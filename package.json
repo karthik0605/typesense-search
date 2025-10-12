@@ -1,0 +1,22 @@
+{
+  "name": "riverstone-typesense-demo",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"skip\"",
+    "start": "node server.mjs",
+    "conv:setup:collection": "node typesense_setup_conversation.mjs",
+    "conv:setup:model": "node typesense_setup_conv_model.mjs",
+    "seating:setup:embedding": "node typesense_setup_seating_embedding.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "express": "^5.1.0",
+    "node-abort-controller": "^3.1.1",
+    "typesense": "^2.1.0"
+  }
+}
