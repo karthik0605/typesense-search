@@ -78,7 +78,8 @@
 
       const baseUrl = `${protocol}://${host}:${port}`;
       const qParam = encodeURIComponent(q).replace(/%20/g, '+');
-      const url = `${baseUrl}/multi_search?q=${qParam}&conversation=true&conversation_stream=false&conversation_model_id=conv-model-1&prefix=false`;
+      const cidParam = conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : '';
+      const url = `${baseUrl}/multi_search?q=${qParam}&conversation=true&conversation_stream=false&conversation_model_id=conv-model-1&prefix=false${cidParam}`;
       const body = JSON.stringify({
         searches: [
           { collection: 'seating', query_by: 'embedding', exclude_fields: 'embedding' }
@@ -102,7 +103,7 @@
         } catch (e) {
           // Network/CORS/timeout -> proxy fallback
           // Always target local Typesense on the VM to avoid hairpinning to public IP
-          const proxyUrl = `/proxy/multi_search?q=${qParam}&conversation=true&conversation_stream=false&conversation_model_id=conv-model-1&prefix=false&host=127.0.0.1&port=8108&protocol=http`;
+          const proxyUrl = `/proxy/multi_search?q=${qParam}&conversation=true&conversation_stream=false&conversation_model_id=conv-model-1&prefix=false${cidParam}&host=127.0.0.1&port=8108&protocol=http`;
           res = await fetch(proxyUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey },

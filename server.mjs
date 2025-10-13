@@ -57,10 +57,11 @@ app.post('/proxy/multi_search', express.json(), async (req, res) => {
   const conversation_stream = (req.query.conversation_stream || 'false').toString();
   const conversation_model_id = (req.query.conversation_model_id || process.env.CONV_MODEL_ID || 'conv-model-1').toString();
   const prefix = (req.query.prefix || 'false').toString();
+  const conversation_id = (req.query.conversation_id || '').toString();
 
   const baseUrl = `${protocol}://${host}:${port}`;
   const encodePlus = (s) => encodeURIComponent(s).replace(/%20/g, '+');
-  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=${encodePlus(conversation)}&conversation_stream=${encodePlus(conversation_stream)}&conversation_model_id=${encodePlus(conversation_model_id)}&prefix=${encodePlus(prefix)}`;
+  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=${encodePlus(conversation)}&conversation_stream=${encodePlus(conversation_stream)}&conversation_model_id=${encodePlus(conversation_model_id)}&prefix=${encodePlus(prefix)}${conversation_id ? `&conversation_id=${encodePlus(conversation_id)}` : ''}`;
 
   try {
     const tsRes = await fetch(url, {
@@ -90,10 +91,11 @@ app.post('/multi_search', express.json(), async (req, res) => {
   const conversation_stream = (req.query.conversation_stream || 'false').toString();
   const conversation_model_id = (req.query.conversation_model_id || process.env.CONV_MODEL_ID || 'conv-model-1').toString();
   const prefix = (req.query.prefix || 'false').toString();
+  const conversation_id = (req.query.conversation_id || '').toString();
 
   const encodePlus = (s) => encodeURIComponent(s).replace(/%20/g, '+');
   const baseUrl = `${upstreamProtocol}://${upstreamHost}:${upstreamPort}`;
-  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=${encodePlus(conversation)}&conversation_stream=${encodePlus(conversation_stream)}&conversation_model_id=${encodePlus(conversation_model_id)}&prefix=${encodePlus(prefix)}`;
+  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=${encodePlus(conversation)}&conversation_stream=${encodePlus(conversation_stream)}&conversation_model_id=${encodePlus(conversation_model_id)}&prefix=${encodePlus(prefix)}${conversation_id ? `&conversation_id=${encodePlus(conversation_id)}` : ''}`;
 
   try {
     const tsRes = await fetch(url, {
@@ -105,6 +107,71 @@ app.post('/multi_search', express.json(), async (req, res) => {
     res.status(tsRes.status).type(tsRes.headers.get('content-type') || 'application/json').send(text);
   } catch (error) {
     res.status(502).json({ error: error?.message || String(error) });
+  }
+});
+
+// Streaming conversation SSE proxy: GET /api/conv/stream?q=...&conversation_id=...
+app.get('/api/conv/stream', async (req, res) => {
+  const upstreamHost = (process.env.TYPESENSE_UPSTREAM_HOST || process.env.TYPESENSE_HOST || '127.0.0.1').toString();
+  const upstreamPort = Number(process.env.TYPESENSE_UPSTREAM_PORT || process.env.TYPESENSE_PORT || 8108);
+  const upstreamProtocol = (process.env.TYPESENSE_UPSTREAM_PROTOCOL || process.env.TYPESENSE_PROTOCOL || 'http').toString();
+  const apiKey = req.header('X-TYPESENSE-API-KEY') || process.env.TYPESENSE_API_KEY || 'xyz';
+
+  const q = (req.query.q || '').toString();
+  const conversation_id = (req.query.conversation_id || '').toString();
+  const conversation_model_id = (req.query.conversation_model_id || process.env.CONV_MODEL_ID || 'conv-model-1').toString();
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  const encodePlus = (s) => encodeURIComponent(s).replace(/%20/g, '+');
+  const baseUrl = `${upstreamProtocol}://${upstreamHost}:${upstreamPort}`;
+  const url = `${baseUrl}/multi_search?q=${encodePlus(q)}&conversation=true&conversation_stream=true&conversation_model_id=${encodePlus(conversation_model_id)}${conversation_id ? `&conversation_id=${encodePlus(conversation_id)}` : ''}&prefix=false`;
+
+  const body = JSON.stringify({
+    searches: [
+      { collection: 'seating', query_by: 'embedding', exclude_fields: 'embedding' }
+    ]
+  });
+
+  const controller = new AbortController();
+  const onClose = () => { try { controller.abort(); } catch (_) {} };
+  req.on('close', onClose);
+
+  try {
+    const tsRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey },
+      body,
+      signal: controller.signal
+    });
+
+    if (!tsRes.ok || !tsRes.body) {
+      const errText = await tsRes.text().catch(() => '');
+      res.write(`data: ${JSON.stringify({ error: `Upstream error ${tsRes.status}`, details: errText })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    const reader = tsRes.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        res.write(decoder.decode(value));
+      }
+    }
+    res.end();
+  } catch (error) {
+    res.write(`data: ${JSON.stringify({ error: String(error && error.message || error) })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } finally {
+    req.off('close', onClose);
   }
 });
 app.get('/', (_req, res) => {
