@@ -181,35 +181,17 @@ app.get('/', (_req, res) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Typesense Books Search</title>
+  <title>Conversational Search</title>
   <style>
     body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }
     .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-    input, select, button { font-size: 16px; padding: 0.5rem; }
-    #results { margin-top: 1rem; display: grid; gap: 0.5rem; }
-    .hit { padding: 0.5rem; border: 1px solid #ddd; border-radius: 8px; }
+    input, button { font-size: 16px; padding: 0.5rem; }
     .muted { color: #666; font-size: 0.9em; }
+    img.thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; vertical-align: middle; margin: 0.25rem 0; }
   </style>
   </head>
   <body>
-    <h1>Typesense Books Search</h1>
-    <div class="row">
-      <input id="q" placeholder="Search (e.g. harry potter)" size="30" />
-      <select id="query_by">
-        <option value="title,authors" selected>title,authors</option>
-        <option value="title">title</option>
-        <option value="authors">authors</option>
-      </select>
-      <select id="sort_by">
-        <option value="ratings_count:desc" selected>ratings_count:desc</option>
-        <option value="ratings_count:asc">ratings_count:asc</option>
-      </select>
-      <button id="go">Search</button>
-    </div>
-    <div id="meta" class="muted"></div>
-    <div id="results"></div>
-    <hr />
-    <h2>Conversational Chat (Streaming)</h2>
+    <h1>Conversational Search</h1>
     <div class="row">
       <input id="chat_q" placeholder="Ask a question" size="40" />
       <button id="chat_go">Ask</button>
@@ -218,41 +200,6 @@ app.get('/', (_req, res) => {
     <div id="chat_stream" class="muted" style="white-space: pre-wrap; margin-top: 0.5rem"></div>
     <div id="chat_id" class="muted" style="margin-top: 0.25rem"></div>
     <script>
-      const qInput = document.getElementById('q');
-      const queryBySel = document.getElementById('query_by');
-      const sortBySel = document.getElementById('sort_by');
-      const goBtn = document.getElementById('go');
-      const resultsEl = document.getElementById('results');
-      const metaEl = document.getElementById('meta');
-
-      async function runSearch() {
-        const q = qInput.value.trim();
-        if (!q) { resultsEl.innerHTML = ''; metaEl.textContent = ''; return; }
-        const params = new URLSearchParams({
-          q,
-          query_by: queryBySel.value,
-          sort_by: sortBySel.value,
-          per_page: '10'
-        });
-        const r = await fetch('/api/search?' + params.toString());
-        const data = await r.json();
-        const hits = (data.hits || []).map(h => h.document);
-        resultsEl.innerHTML = hits.map(doc => \`
-          <div class="hit">
-            <div><strong>\${doc.title}</strong></div>
-            <div class="muted">Authors: \${(doc.authors || []).join(', ')}</div>
-            <div class="muted">Year: \${doc.publication_year} · Ratings: \${doc.ratings_count}</div>
-          </div>
-        \`).join('');
-        metaEl.textContent = \`Found \${data.found || 0} in \${data.search_time_ms || 0}ms\`;
-      }
-
-      goBtn.addEventListener('click', runSearch);
-      qInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
-      qInput.value = 'harry potter';
-      runSearch();
-
-      // Streaming chat
       const chatQ = document.getElementById('chat_q');
       const chatGo = document.getElementById('chat_go');
       const chatReset = document.getElementById('chat_reset');
@@ -260,14 +207,33 @@ app.get('/', (_req, res) => {
       const chatId = document.getElementById('chat_id');
       let conversationId = undefined;
       let es = undefined;
+      let buffer = '';
 
       function closeStream() { if (es) { es.close(); es = undefined; } }
+
+      function escapeHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+
+      function renderMarkdownLite(md) {
+        const escaped = escapeHtml(md || '');
+        const withImgs = escaped.replace(/!\\[([^\\]]*)\\]\\((https?:[^)\\s]+\\.(?:jpg|jpeg|png|gif|webp)[^)]*)\\)/gi, (_m, alt, url) => {
+          const safeAlt = String(alt || '').replace(/\"/g, '&quot;');
+          return '<img class="thumb" src="' + url + '" alt="' + safeAlt + '" loading="lazy" />';
+        });
+        const withLinks = withImgs.replace(/\\[([^\\]]+)\\]\\((https?:[^)\\s]+)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1<\/a>');
+        const withBold = withLinks.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1<\/strong>');
+        // Strip common bullet prefixes at line start: hyphen, en dash, em dash, bullet
+        const withoutDash = withBold.replace(/^\s*[-–—•]\s+/gm, '');
+        return withoutDash.replace(/\\n/g, '<br>');
+      }
 
       async function startChat() {
         const q = chatQ.value.trim();
         if (!q) return;
         closeStream();
-        chatStream.textContent = '';
+        buffer = '';
+        chatStream.innerHTML = '';
         const params = new URLSearchParams({ q });
         if (conversationId) params.set('conversation_id', conversationId);
         es = new EventSource('/api/conv/stream?' + params.toString());
@@ -278,25 +244,17 @@ app.get('/', (_req, res) => {
           try {
             const parsed = JSON.parse(ev.data);
             parsedOk = true;
-            if (parsed?.message) { chatStream.textContent += parsed.message; appended = true; }
-            if (parsed?.conversation?.message) { chatStream.textContent += parsed.conversation.message; appended = true; }
-            if (parsed?.conversation?.answer) {
-              chatStream.textContent += (chatStream.textContent ? '\\n' : '') + parsed.conversation.answer;
-              appended = true;
-            }
+            if (parsed?.message) { buffer += parsed.message; appended = true; }
+            if (parsed?.conversation?.message) { buffer += parsed.conversation.message; appended = true; }
+            if (parsed?.conversation?.answer) { buffer += (buffer ? '\\n' : '') + parsed.conversation.answer; appended = true; }
             const cid = parsed?.conversation_id || parsed?.conversation?.conversation_id;
             if (cid) { conversationId = cid; chatId.textContent = 'conversation_id: ' + conversationId; }
-            if (parsed?.error) {
-              chatStream.textContent += '\\n[error] ' + String(parsed.error) + (parsed?.details ? ' - ' + String(parsed.details) : '') + '\\n';
-              appended = true;
-            }
+            if (parsed?.error) { buffer += '\\n[error] ' + String(parsed.error) + (parsed?.details ? ' - ' + String(parsed.details) : '') + '\\n'; appended = true; }
           } catch (_) { /* not JSON */ }
-          // Only append raw when it's not valid JSON at all.
-          if (!parsedOk && ev.data) {
-            chatStream.textContent += ev.data;
-          }
+          if (!parsedOk && ev.data) { buffer += ev.data; }
+          if (appended || !parsedOk) { chatStream.innerHTML = renderMarkdownLite(buffer); }
         };
-        es.onerror = (e) => { chatStream.textContent += '\\n[stream error]\\n'; closeStream(); };
+        es.onerror = () => { chatStream.textContent += '\\n[stream error]\\n'; closeStream(); };
       }
 
       chatGo.addEventListener('click', startChat);

@@ -57,7 +57,7 @@
       protocol: params.get('protocol') || saved.protocol || 'http',
       searchKey: params.get('apiKey') || saved.searchKey || ''
     });
-    qEl.value = params.get('q') || 'suggest a fantasy book';
+    qEl.value = params.get('q') || 'suggest a chair under 1000';
 
     fetch('/config.json').then(r => r.ok ? r.json() : null).then(cfg => {
       if (cfg) applyValues(cfg);
@@ -74,7 +74,7 @@
       const q = qEl.value.trim();
       if (!host || !port || !q || !apiKey) return;
 
-      outEl.textContent = '';
+      outEl.innerHTML = '';
 
       const baseUrl = `${protocol}://${host}:${port}`;
       const qParam = encodeURIComponent(q).replace(/%20/g, '+');
@@ -123,12 +123,82 @@
           conversationId = conv.conversation_id;
           cidEl.textContent = 'conversation_id: ' + conversationId;
         }
-        if (conv?.answer) {
-          outEl.textContent = conv.answer;
-        } else if (conv?.message) {
-          outEl.textContent = conv.message;
+
+        function escapeHtml(s) {
+          return s
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        }
+
+        function renderMarkdownLite(md) {
+          const escaped = escapeHtml(md || '');
+          // Images: ![alt](url.ext)
+          const withImgs = escaped.replace(/!\[([^\]]*)\]\((https?:[^)\s]+\.(?:jpg|jpeg|png|gif|webp)[^)]*)\)/gi, (_m, alt, url) => {
+            const safeAlt = String(alt || '').replace(/\"/g, '&quot;');
+            return '<img src="' + url + '" alt="' + safeAlt + '" style="width:72px;height:72px;object-fit:cover;border-radius:6px;vertical-align:middle;margin:0.25rem 0" loading="lazy" />';
+          });
+          // Links: [text](url)
+          const withLinks = withImgs.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1<\/a>');
+          // Bold: **text**
+          const withBold = withLinks.replace(/\*\*([^*]+)\*\*/g, '<strong>$1<\/strong>');
+          // Strip common bullet prefixes at line start: hyphen, en dash, em dash, bullet
+          const withoutDash = withBold.replace(/^\s*[-–—•]\s+/gm, '');
+          // Newlines → <br>
+          return withoutDash.replace(/\n/g, '<br>');
+        }
+
+        async function renderSuggestions() {
+          try {
+            const sugUrl = `${baseUrl}/multi_search?q=${qParam}&conversation=false&conversation_stream=false&prefix=true`;
+            const sugBody = JSON.stringify({ searches: [ { collection: 'seating', q, query_by: 'code,description', per_page: 5 } ] });
+            const sres = await fetch(sugUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey }, body: sugBody });
+            const sdata = await sres.json();
+            const hits = ((sdata && sdata.results && sdata.results[0] && sdata.results[0].hits) || []).slice(0,5);
+            if (hits.length) {
+              const items = hits.map(h => (h.document && (h.document.code || h.document.description) || '')).filter(Boolean);
+              outEl.innerHTML = '<div>No exact matches. Try: ' + items.map(i => '<span style="border:1px solid #ddd;border-radius:12px;padding:0.1rem 0.4rem;margin-right:0.25rem;display:inline-block">' + String(i).slice(0,40) + '</span>').join('') + '</div>';
+            } else {
+              outEl.innerHTML = '<div style="color:#666">No results. Try a shorter query.</div>';
+            }
+          } catch (_) {
+            outEl.innerHTML = '<div style="color:#666">No results. Try a shorter query.</div>';
+          }
+        }
+
+        const answerText = (conv && (conv.answer || conv.message)) || '';
+        if (answerText && /no knowledge|don\'t have|do not have|i don\'t know|cannot answer|no information|unknown/i.test(answerText)) {
+          await renderSuggestions();
+          return;
+        }
+
+        const rendered = conv?.answer ? renderMarkdownLite(conv.answer)
+                        : conv?.message ? renderMarkdownLite(conv.message)
+                        : undefined;
+        if (rendered !== undefined) {
+          outEl.innerHTML = rendered;
         } else {
           outEl.textContent = JSON.stringify(data, null, 2);
+        }
+
+        // Basic deadending: if no hits, try a relaxed prefix search against baseUrl and show 5 suggestions
+        const found = Number((data && data.results && data.results[0] && data.results[0].found) || 0);
+        if (!found) {
+          try {
+            const sugUrl = `${baseUrl}/multi_search?q=${qParam}&conversation=false&conversation_stream=false&prefix=true`;
+            const sugBody = JSON.stringify({ searches: [ { collection: 'seating', q, query_by: 'code,description', per_page: 5 } ] });
+            const sres = await fetch(sugUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKey }, body: sugBody });
+            const sdata = await sres.json();
+            const hits = ((sdata && sdata.results && sdata.results[0] && sdata.results[0].hits) || []).slice(0,5);
+            if (hits.length) {
+              const items = hits.map(h => (h.document && (h.document.code || h.document.description) || '')).filter(Boolean);
+              outEl.innerHTML += `<div style="margin-top:0.5rem">No exact matches. Try: ${items.map(i => `<span style='border:1px solid #ddd;border-radius:12px;padding:0.1rem 0.4rem;margin-right:0.25rem;display:inline-block'>${String(i).slice(0,40)}</span>`).join('')}</div>`;
+            } else {
+              outEl.innerHTML += `<div style="margin-top:0.5rem;color:#666">No results. Try a shorter query.</div>`;
+            }
+          } catch (_) {
+            outEl.innerHTML += `<div style="margin-top:0.5rem;color:#666">No results. Try a shorter query.</div>`;
+          }
         }
       } catch (err) {
         outEl.textContent = '[error] ' + (err?.message || String(err));

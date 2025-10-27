@@ -1,24 +1,30 @@
-VM tunnel (Mac):
-ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -N -L 8108:127.0.0.1:8108 typesense@54.219.100.201
-password: <VM password>
+0) Start/verify SSH tunnel (Mac)
+ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 8108:127.0.0.1:8108 typesense@54.219.100.201
+# enter VM password when prompted
+curl -sS http://localhost:8108/health
 
-Seating embeddings (once):
+4) Start the server (enables streaming proxy)
+TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
+TYPESENSE_API_KEY=<API_Key> npm start
+# Keep this terminal open, or run with a process manager
+
+5) Use the demos
+Instant search (keyword): http://localhost:3000/public/instant
+Conversational (non-streaming follow-ups): http://localhost:3000/public/conv
+Conversational streaming: http://localhost:3000/  (shows gradual chunks and conversation_id)
+
+
+For first time use, this is already set up on the VM
+1) Install deps 
+npm ci
+
+2) Import seating data with embeddings (once)
 OPENAI_API_KEY=<OPENAI> TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
 TYPESENSE_API_KEY=<TYPESENSE> npm run seating:setup:embedding --silent
+# Note: the importer expects via-seating-from-app.json in this repo. If you moved the repo, update the path in typesense_setup_seating_embedding.mjs accordingly.
 
-Conversation model (once):
+3) Configure conversation model and history (once)
 TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
 TYPESENSE_API_KEY=<TYPESENSE> node typesense_setup_conversation.mjs
 OPENAI_API_KEY=<OPENAI> TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
 TYPESENSE_API_KEY=<TYPESENSE> node typesense_setup_conv_model.mjs
-
-Start server:
-TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 TYPESENSE_PROTOCOL=http \
-TYPESENSE_API_KEY=<TYPESENSE> npm start --silent
-
-UIs (use your admin Typesense key when prompted):
-http://localhost:3000/public/instant
-http://localhost:3000/public/conv
-
-Currently can put API key directly through browser (for fast testing), 
-but sends to server during setup, which would be optimal for production

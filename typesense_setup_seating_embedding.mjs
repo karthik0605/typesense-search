@@ -25,11 +25,13 @@ function buildSchema() {
       { name: 'price_text', type: 'string' },
       { name: 'image_url', type: 'string' },
       { name: 'category', type: 'string', facet: true },
+      { name: 'price_bucket', type: 'string', facet: true },
+      { name: 'color', type: 'string', facet: true },
       {
         name: 'embedding',
         type: 'float[]',
         embed: {
-          from: ['code', 'description', 'category', 'price_text'],
+          from: ['code', 'description', 'category', 'price_text', 'price_bucket', 'color'],
           model_config: {
             model_name: 'openai/text-embedding-3-small',
             api_key: process.env.OPENAI_API_KEY || ''
@@ -65,7 +67,20 @@ async function reimport() {
     const imageUrl = (p?.SuperCatalog?.EnhancedPreview || '').toString();
     const category = (p?.Category?.Category || p?.ProductCategories?.[0]?.ProductCategory || '').toString();
     const price_text = price ? `price ${price} USD` : '';
-    docs.push({ id: code, code, description, price, price_text, image_url: imageUrl, category });
+    // Derive a simple price bucket for faceting
+    let price_bucket = '';
+    if (price > 0 && price <= 250) price_bucket = '$0–$250';
+    else if (price <= 500) price_bucket = '$250–$500';
+    else if (price <= 1000) price_bucket = '$500–$1000';
+    else if (price > 1000) price_bucket = '$1000+';
+
+    // Heuristic color extraction from code/description
+    const palette = ['black','white','gray','grey','blue','green','red','yellow','orange','purple','brown','beige','ivory','silver','gold','alloy'];
+    const hay = (code + ' ' + description).toLowerCase();
+    let color = '';
+    for (const c of palette) { if (hay.includes(c)) { color = c; break; } }
+
+    docs.push({ id: code, code, description, price, price_text, image_url: imageUrl, category, price_bucket, color });
   }
 
   const jsonl = docs.map(d => JSON.stringify(d)).join('\n') + (docs.length ? '\n' : '');

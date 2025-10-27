@@ -10,6 +10,8 @@
     .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     input { font-size: 16px; padding: 0.5rem; }
     #results { margin-top: 1rem; }
+    .facet-section { border: 1px solid #ddd; border-radius: 8px; padding: 0.5rem; margin-top: 0.5rem; }
+    .facet-title { font-weight: 600; margin-bottom: 0.25rem; }
   </style>
 </head>
 <body>
@@ -22,7 +24,13 @@
   </div>
 
   <div id="searchbox" style="margin-top: 1rem"></div>
+  <div id="clear" style="margin-top: 0.5rem"></div>
+  <div id="current"></div>
+  <div class="facet-section"><div class="facet-title">Category</div><div id="facet-category"></div></div>
+  <div class="facet-section"><div class="facet-title">Price</div><div id="facet-price"></div></div>
+  <div class="facet-section"><div class="facet-title">Color</div><div id="facet-color"></div></div>
   <div id="hits"></div>
+  <div id="deadend" style="margin-top:0.5rem"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/instantsearch.js@4"></script>
   <script src="https://cdn.jsdelivr.net/npm/typesense-instantsearch-adapter@2/dist/typesense-instantsearch-adapter.min.js"></script>
@@ -74,12 +82,37 @@
           async search(requests) {
             const q = (requests?.[0]?.params?.query || '').toString();
             const body = {
-              searches: requests.map(r => ({
-                collection: 'seating',
-                query_by: (r.params && r.params.query_by) || 'code,description',
-                sort_by: (r.params && r.params.sort_by) || 'price:asc',
-                q
-              }))
+              searches: requests.map(r => {
+                const facetFilters = (r && r.params && r.params.facetFilters) || [];
+                const selected = { category: [], price_bucket: [], color: [] };
+                for (const grp of facetFilters) {
+                  const arr = Array.isArray(grp) ? grp : [grp];
+                  for (const f of arr) {
+                    if (typeof f !== 'string') continue;
+                    const idx = f.indexOf(':');
+                    if (idx === -1) continue;
+                    const attr = f.slice(0, idx);
+                    const val = f.slice(idx + 1);
+                    if (Object.prototype.hasOwnProperty.call(selected, attr)) {
+                      selected[attr].push(val);
+                    }
+                  }
+                }
+                const parts = [];
+                if (selected.category.length) parts.push(`category:=[${selected.category.map(v => '"' + v.replace(/"/g,'\\"') + '"').join(',')}]`);
+                if (selected.price_bucket.length) parts.push(`price_bucket:=[${selected.price_bucket.map(v => '"' + v.replace(/"/g,'\\"') + '"').join(',')}]`);
+                if (selected.color.length) parts.push(`color:=[${selected.color.map(v => '"' + v.replace(/"/g,'\\"') + '"').join(',')}]`);
+                const filter_by = parts.length ? parts.join(' && ') : undefined;
+                return {
+                  collection: 'seating',
+                  query_by: (r.params && r.params.query_by) || 'code,description',
+                  sort_by: (r.params && r.params.sort_by) || 'price:asc',
+                  facet_by: 'category,price_bucket,color',
+                  max_facet_values: 50,
+                  filter_by,
+                  q
+                };
+              })
             };
             const res = await fetch(`/multi_search?q=${encodeURIComponent(q).replace(/%20/g,'+')}&conversation=false&conversation_stream=false&prefix=false`, {
               method: 'POST',
@@ -87,13 +120,22 @@
               body: JSON.stringify(body)
             });
             const data = await res.json();
-            const results = (data.results || []).map(r => ({
-              hits: (r.hits || []).map(h => ({ ...h.document, _id: h.document.id, _snippetResult: {} })),
-              nbHits: r.found || 0,
-              processingTimeMS: r.search_time_ms || 0,
-              params: '',
-              query: q
-            }));
+            const results = (data.results || []).map(r => {
+              const facets = {};
+              (r.facet_counts || []).forEach(fc => {
+                const counts = {};
+                (fc.counts || []).forEach(c => { if (c && c.value != null) counts[c.value] = c.count || 0; });
+                facets[fc.field_name] = counts;
+              });
+              return {
+                hits: (r.hits || []).map(h => ({ ...h.document, _id: h.document.id, _snippetResult: {} })),
+                nbHits: r.found || 0,
+                processingTimeMS: r.search_time_ms || 0,
+                params: '',
+                query: q,
+                facets
+              };
+            });
             return { results };
           }
         };
@@ -102,7 +144,9 @@
           server: { apiKey, nodes: [{ host, port: Number(port), protocol }] },
           additionalSearchParameters: {
             query_by: 'code,description',
-            sort_by: 'price:asc'
+            sort_by: 'price:asc',
+            facet_by: 'category,price_bucket,color',
+            max_facet_values: 50
           }
         });
         searchClient = typesenseInstantsearchAdapter.searchClient;
@@ -111,8 +155,30 @@
       if (search) { search.dispose(); }
       search = instantsearch({ indexName: 'seating', searchClient });
 
+      const deadendEl = document.getElementById('deadend');
+
       search.addWidgets([
         instantsearch.widgets.searchBox({ container: '#searchbox' }),
+        instantsearch.widgets.refinementList({
+          container: '#facet-category',
+          attribute: 'category',
+          sortBy: ['name:asc'],
+          transformItems(items) { return (items || []).filter(it => (typeof it.count === 'number' ? it.count : 0) > 0); }
+        }),
+        instantsearch.widgets.refinementList({
+          container: '#facet-price',
+          attribute: 'price_bucket',
+          sortBy: ['name:asc'],
+          transformItems(items) { return (items || []).filter(it => (typeof it.count === 'number' ? it.count : 0) > 0); }
+        }),
+        instantsearch.widgets.refinementList({
+          container: '#facet-color',
+          attribute: 'color',
+          sortBy: ['name:asc'],
+          transformItems(items) { return (items || []).filter(it => (typeof it.count === 'number' ? it.count : 0) > 0); }
+        }),
+        instantsearch.widgets.currentRefinements({ container: '#current' }),
+        instantsearch.widgets.clearRefinements({ container: '#clear' }),
         instantsearch.widgets.hits({
           container: '#hits',
           templates: {
@@ -120,12 +186,36 @@
               const desc = (hit.description || '').slice(0, 140);
               const price = (typeof hit.price === 'number') ? `$${hit.price.toFixed(2)}` : '';
               return `<div style="padding:0.5rem;border:1px solid #ddd;border-radius:8px;margin-bottom:0.5rem">
-                <div><strong>${hit.code || ''}</strong> <span style="color:#666">${price}</span></div>
-                <div style="color:#666">${desc}</div>
+                <div style="display:flex;align-items:center">
+                  ${hit.image_url ? '<img src="' + hit.image_url + '" alt="' + (hit.code || '') + '" style="width:72px;height:72px;object-fit:cover;border-radius:6px;margin-right:0.5rem" />' : ''}
+                  <div>
+                    <div><strong>${hit.code || ''}</strong> <span style="color:#666">${price}</span></div>
+                    <div style="color:#666">${desc}</div>
+                  </div>
+                </div>
               </div>`;
             }
           }
-        })
+        }),
+        {
+          render({ results }) {
+            const q = (results && results.query) || '';
+            const nbHits = (results && typeof results.nbHits === 'number') ? results.nbHits : 0;
+            if (nbHits > 0) { deadendEl.innerHTML = ''; return; }
+            if (!q) { deadendEl.innerHTML = ''; return; }
+            // Minimal relaxed search suggestions using same-origin /multi_search (works in both proxy and direct modes)
+            fetch(`/multi_search?q=${encodeURIComponent(q).replace(/%20/g,'+')}&conversation=false&conversation_stream=false&prefix=true`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-TYPESENSE-API-KEY': apiKeyEl.value.trim() },
+              body: JSON.stringify({ searches: [ { collection: 'seating', q, query_by: 'code,description', per_page: 5 } ] })
+            }).then(r => r.json()).then(data => {
+              const hits = ((data && data.results && data.results[0] && data.results[0].hits) || []).slice(0,5);
+              if (!hits.length) { deadendEl.innerHTML = '<div style="color:#666">No results. Try a shorter query.</div>'; return; }
+              const items = hits.map(h => (h.document && (h.document.code || h.document.description) || '')).filter(Boolean);
+              deadendEl.innerHTML = '<div>No results. Try: ' + items.map(i => `<span style="border:1px solid #ddd;border-radius:12px;padding:0.1rem 0.4rem;margin-right:0.25rem;display:inline-block">${String(i).slice(0,40)}</span>`).join('') + '</div>';
+            }).catch(() => { deadendEl.innerHTML = '<div style="color:#666">No results. Try a shorter query.</div>'; });
+          }
+        }
       ]);
 
       search.start();
